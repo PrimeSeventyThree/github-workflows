@@ -1,0 +1,67 @@
+name: Claude
+
+# Reusable workflow: answers @claude in issues, issue and pull request comments, and reviews,
+# using Anthropic's Claude Code GitHub Action. Each repository calls it from a short
+# .github/workflows/claude.yml (see README.md) and holds its own CLAUDE_CODE_OAUTH_TOKEN secret.
+#
+# Only people with write access to the calling repository can trigger it (the action checks),
+# and bots are rejected, so a comment on a public repository can't start a run.
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: "Claude model, such as claude-sonnet-5-5 (default: Claude Code's default)"
+        type: string
+        default: ""
+      max_turns:
+        description: "Most conversation turns per run"
+        type: number
+        default: 40
+      timeout_minutes:
+        description: "Job timeout"
+        type: number
+        default: 45
+      runs_on:
+        description: "Runner label; Xcode work needs macos-15 (paid minutes on private repositories)"
+        type: string
+        default: ubuntu-latest
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: "From `claude setup-token`: runs use the Claude subscription"
+        required: true
+
+jobs:
+  claude:
+    # Skip runners entirely for comments, reviews and issues that don't mention @claude.
+    if: >-
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    # One run at a time per issue or pull request; a newer mention waits instead of racing.
+    concurrency:
+      group: claude-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write # the action's GitHub App authentication
+      actions: read # lets Claude read CI results on pull requests
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+          claude_args: >-
+            --max-turns ${{ inputs.max_turns }}
+            ${{ inputs.model && format('--model {0}', inputs.model) || '' }}
+            --append-system-prompt "If the repository has an AGENTS.md, read it first and follow it, especially its Git workflow: never push to the default branch, keep changes on your own branch, and say in the pull request which issue it closes. Leave merging to the maintainer."
